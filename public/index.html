@@ -1,0 +1,1094 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Claude Chat</title>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/marked/12.0.1/marked.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+  <style>
+    :root {
+      --bg-primary: #1a1a2e;
+      --bg-secondary: #16213e;
+      --bg-tertiary: #0f3460;
+      --text-primary: #e0e0e0;
+      --text-secondary: #a0a0b0;
+      --accent: #7c5cbf;
+      --accent-light: #9d7ed9;
+      --user-bubble: #2d5a8e;
+      --assistant-bubble: #2a2a3e;
+      --tool-bg: #1e1e30;
+      --border: #333355;
+      --error: #e74c3c;
+      --success: #2ecc71;
+    }
+
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: var(--bg-primary);
+      color: var(--text-primary);
+      height: 100vh;
+      display: flex;
+      overflow: hidden;
+    }
+
+    /* Sidebar */
+    .sidebar {
+      width: 260px;
+      background: var(--bg-secondary);
+      border-right: 1px solid var(--border);
+      display: flex;
+      flex-direction: column;
+      flex-shrink: 0;
+      transition: margin-left 0.3s;
+    }
+
+    .sidebar.collapsed { margin-left: -260px; }
+
+    .sidebar-header {
+      padding: 16px;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+
+    .sidebar-header h2 { font-size: 16px; font-weight: 600; flex: 1; }
+
+    .new-chat-btn {
+      background: var(--accent);
+      color: white;
+      border: none;
+      padding: 8px 16px;
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 13px;
+      width: 100%;
+      margin: 12px 16px;
+      width: calc(100% - 32px);
+      transition: background 0.2s;
+    }
+
+    .new-chat-btn:hover { background: var(--accent-light); }
+
+    .session-list { flex: 1; overflow-y: auto; padding: 8px; }
+
+    .session-item {
+      padding: 10px 12px;
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 13px;
+      color: var(--text-secondary);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      transition: background 0.15s;
+    }
+
+    .session-item:hover { background: var(--bg-tertiary); }
+    .session-item.active { background: var(--bg-tertiary); color: var(--text-primary); }
+
+    .session-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .session-running { font-size: 10px; color: var(--success); margin-left: 4px; }
+    .session-date { font-size: 11px; color: var(--text-secondary); opacity: 0.6; }
+
+    /* Main area */
+    .main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+
+    .top-bar {
+      padding: 12px 16px;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      background: var(--bg-secondary);
+    }
+
+    .toggle-sidebar-btn {
+      background: none; border: none; color: var(--text-secondary);
+      cursor: pointer; font-size: 20px; padding: 4px 8px; border-radius: 4px;
+    }
+
+    .toggle-sidebar-btn:hover { background: var(--bg-tertiary); }
+
+    .top-bar-title {
+      font-size: 14px; color: var(--text-secondary); flex: 1;
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+
+    .cost-display {
+      font-size: 12px; color: var(--text-secondary);
+      padding: 4px 8px; background: var(--bg-primary); border-radius: 4px;
+    }
+
+    .usage-display {
+      font-size: 11px; color: var(--text-secondary);
+      padding: 6px 10px; background: var(--bg-primary); border-radius: 4px;
+      display: flex; flex-direction: column; gap: 2px; min-width: 180px;
+    }
+
+    .usage-row {
+      display: flex; justify-content: space-between; align-items: center; gap: 8px;
+    }
+
+    .usage-label { opacity: 0.7; }
+
+    .usage-bar {
+      flex: 1; height: 4px; background: var(--bg-tertiary);
+      border-radius: 2px; overflow: hidden; position: relative;
+    }
+
+    .usage-bar-fill {
+      height: 100%; transition: width 0.3s ease;
+      border-radius: 2px;
+    }
+
+    .usage-bar-fill.low { background: var(--success); }
+    .usage-bar-fill.medium { background: var(--accent); }
+    .usage-bar-fill.high { background: var(--error); }
+
+    .usage-text { font-size: 10px; font-weight: 600; min-width: 35px; text-align: right; }
+
+    /* Content wrapper - split pane */
+    .content-wrapper { flex: 1; display: flex; gap: 0; overflow: hidden; }
+
+    .messages-pane {
+      flex: 1; display: flex; flex-direction: column;
+      min-width: 0; border-right: 1px solid var(--border);
+    }
+
+    .tools-pane {
+      width: 45%; background: var(--bg-primary);
+      display: flex; flex-direction: column; min-width: 0;
+    }
+
+    .tools-header {
+      padding: 12px 16px; background: var(--bg-secondary);
+      border-bottom: 1px solid var(--border);
+      font-size: 13px; font-weight: 600; color: var(--text-secondary);
+    }
+
+    .tools-content {
+      flex: 1; overflow-y: auto; padding: 12px;
+      display: flex; flex-direction: column; gap: 8px;
+    }
+
+    .tools-empty {
+      color: var(--text-secondary); font-size: 13px;
+      text-align: center; padding: 40px 20px; opacity: 0.6;
+    }
+
+    /* Messages */
+    .messages {
+      flex: 1; overflow-y: auto; padding: 20px;
+      display: flex; flex-direction: column; gap: 16px;
+    }
+
+    .message {
+      max-width: 85%; padding: 12px 16px; border-radius: 12px;
+      line-height: 1.6; font-size: 14px; word-wrap: break-word;
+    }
+
+    .message.user {
+      align-self: flex-end; background: var(--user-bubble);
+      border-bottom-right-radius: 4px;
+    }
+
+    .message.assistant {
+      align-self: flex-start; background: var(--assistant-bubble);
+      border-bottom-left-radius: 4px;
+    }
+
+    .message.assistant .content { max-width: 100%; }
+    .message.assistant .content p { margin-bottom: 8px; }
+    .message.assistant .content p:last-child { margin-bottom: 0; }
+
+    .message.assistant .content pre {
+      background: #0d0d1a; border: 1px solid var(--border);
+      border-radius: 6px; padding: 12px; overflow-x: auto; margin: 8px 0;
+    }
+
+    .message.assistant .content code {
+      font-family: 'JetBrains Mono', 'Fira Code', 'Consolas', monospace; font-size: 13px;
+    }
+
+    .message.assistant .content :not(pre) > code {
+      background: #0d0d1a; padding: 2px 6px; border-radius: 3px; font-size: 13px;
+    }
+
+    .message.assistant .content ul, .message.assistant .content ol { padding-left: 20px; margin: 8px 0; }
+    .message.assistant .content li { margin-bottom: 4px; }
+    .message.assistant .content a { color: var(--accent-light); }
+
+    .message.assistant .content table { border-collapse: collapse; margin: 8px 0; width: 100%; }
+    .message.assistant .content th, .message.assistant .content td {
+      border: 1px solid var(--border); padding: 6px 10px; text-align: left;
+    }
+    .message.assistant .content th { background: var(--bg-tertiary); }
+
+    .message.system-error {
+      align-self: center; background: rgba(231, 76, 60, 0.15);
+      border: 1px solid var(--error); color: var(--error);
+      font-size: 13px; max-width: 90%; text-align: center;
+    }
+
+    .history-separator {
+      align-self: center; color: var(--text-secondary); font-size: 12px;
+      padding: 8px 16px; background: var(--bg-secondary);
+      border-radius: 12px; opacity: 0.7;
+    }
+
+    /* Tool indicators */
+    .tool-indicator {
+      padding: 8px 12px; background: var(--tool-bg);
+      border-left: 3px solid var(--accent);
+      border-radius: 0 6px 6px 0; font-size: 12px;
+      color: var(--text-secondary); width: 100%;
+    }
+
+    .tool-indicator .tool-name {
+      color: var(--accent-light); font-weight: 600;
+      display: flex; align-items: center; gap: 8px;
+    }
+
+    .tool-indicator .tool-detail {
+      margin-top: 4px; font-family: 'JetBrains Mono', monospace;
+      font-size: 11px; opacity: 0.8; word-wrap: break-word;
+      white-space: pre-wrap; color: var(--text-primary);
+    }
+
+    .tool-indicator.running .tool-name::before {
+      content: ''; display: inline-block; width: 8px; height: 8px;
+      border-radius: 50%; background: var(--accent);
+      animation: pulse 1.5s ease-in-out infinite; flex-shrink: 0;
+    }
+
+    .tool-indicator.completed { opacity: 0.7; border-left-color: var(--success); }
+    .tool-indicator.completed .tool-name::before {
+      content: '\2713'; color: var(--success); font-size: 10px; font-weight: bold;
+    }
+
+    @keyframes pulse { 0%, 100% { opacity: 0.4; } 50% { opacity: 1; } }
+
+    .loading-history {
+      align-self: center; color: var(--text-secondary); font-size: 13px; padding: 20px;
+    }
+
+    .loading-history::after {
+      content: ''; display: inline-block; width: 12px; height: 12px;
+      border: 2px solid var(--text-secondary); border-top-color: transparent;
+      border-radius: 50%; margin-left: 8px; animation: spin 0.8s linear infinite;
+      vertical-align: middle;
+    }
+
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    /* Input area */
+    .input-area { padding: 16px 20px; border-top: 1px solid var(--border); background: var(--bg-secondary); }
+    .input-row { display: flex; gap: 12px; align-items: flex-end; }
+    .input-wrapper { flex: 1; position: relative; }
+
+    textarea {
+      width: 100%; padding: 12px 16px; background: var(--bg-primary);
+      color: var(--text-primary); border: 1px solid var(--border);
+      border-radius: 12px; font-family: inherit; font-size: 14px;
+      line-height: 1.5; resize: none; outline: none;
+      min-height: 48px; max-height: 200px; transition: border-color 0.2s;
+    }
+
+    textarea:focus { border-color: var(--accent); }
+    textarea::placeholder { color: var(--text-secondary); opacity: 0.5; }
+
+    .send-btn {
+      background: var(--accent); color: white; border: none;
+      width: 48px; height: 48px; border-radius: 12px; cursor: pointer;
+      font-size: 18px; display: flex; align-items: center;
+      justify-content: center; transition: background 0.2s; flex-shrink: 0;
+    }
+
+    .send-btn:hover:not(:disabled) { background: var(--accent-light); }
+    .send-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+    .stop-btn { background: var(--error); }
+    .stop-btn:hover:not(:disabled) { background: #c0392b; }
+
+    .welcome {
+      flex: 1; display: flex; flex-direction: column;
+      align-items: center; justify-content: center;
+      color: var(--text-secondary); padding: 40px; text-align: center;
+    }
+
+    .welcome h1 { font-size: 28px; color: var(--text-primary); margin-bottom: 8px; }
+    .welcome p { font-size: 15px; max-width: 500px; line-height: 1.6; }
+
+    .auth-overlay { display: none; }
+
+    ::-webkit-scrollbar { width: 6px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+    ::-webkit-scrollbar-thumb:hover { background: var(--text-secondary); }
+
+    @media (max-width: 768px) {
+      .sidebar { position: absolute; z-index: 50; height: 100vh; }
+      .sidebar.collapsed { margin-left: -260px; }
+      .message { max-width: 95%; }
+      .content-wrapper { flex-direction: column; }
+      .messages-pane { border-right: none; border-bottom: 1px solid var(--border); }
+      .tools-pane { width: 100%; height: 40%; }
+    }
+  </style>
+</head>
+<body>
+
+  <!-- Sidebar -->
+  <div class="sidebar" id="sidebar">
+    <div class="sidebar-header">
+      <h2>Sessions</h2>
+    </div>
+    <button class="new-chat-btn" onclick="newChat()">+ New Chat</button>
+    <div class="session-list" id="sessionList"></div>
+  </div>
+
+  <!-- Main area -->
+  <div class="main">
+    <div class="top-bar">
+      <button class="toggle-sidebar-btn" onclick="toggleSidebar()" title="Toggle sidebar">&#9776;</button>
+      <span class="top-bar-title" id="topBarTitle">Claude Chat</span>
+      <div class="usage-display" id="usageDisplay" style="display: none;" title="Live usage data from Claude API">
+        <div class="usage-row">
+          <span class="usage-label">Session:</span>
+          <div class="usage-bar"><div class="usage-bar-fill" id="sessionBar"></div></div>
+          <span class="usage-text" id="sessionText">--</span>
+        </div>
+        <div class="usage-row">
+          <span class="usage-label">Weekly:</span>
+          <div class="usage-bar"><div class="usage-bar-fill" id="weeklyBar"></div></div>
+          <span class="usage-text" id="weeklyText">--</span>
+        </div>
+        <div class="usage-row" id="extraUsageRow" style="display: none;">
+          <span class="usage-label">Extra:</span>
+          <div class="usage-bar"><div class="usage-bar-fill" id="extraBar"></div></div>
+          <span class="usage-text" id="extraText">--</span>
+        </div>
+      </div>
+      <span class="cost-display" id="costDisplay"></span>
+    </div>
+
+    <div class="content-wrapper">
+      <div class="messages-pane">
+        <div class="messages" id="messages">
+          <div class="welcome">
+            <h1>Claude Chat</h1>
+            <p>Ask Claude anything. Claude has access to tools including SSH, Bash, and file operations on this server.</p>
+          </div>
+        </div>
+      </div>
+      <div class="tools-pane">
+        <div class="tools-header">Tool Execution</div>
+        <div class="tools-content" id="toolsContent">
+          <div class="tools-empty">Commands will appear here when Claude executes tools</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="input-area">
+      <div class="input-row">
+        <div class="input-wrapper">
+          <textarea id="messageInput" placeholder="Send a message..." rows="1"
+            onkeydown="handleKeyDown(event)" oninput="autoResize(this)"></textarea>
+        </div>
+        <button class="send-btn" id="sendBtn" onclick="sendMessage()" title="Send">&#9654;</button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    // State
+    let currentSessionId = localStorage.getItem('claude_chat_session') || null;
+    let currentProcessId = localStorage.getItem('claude_chat_process') || null;
+    let isStreaming = false;
+    let totalCost = 0;
+    let sessions = [];
+
+    // Streaming state (shared between sendMessage and reconnect)
+    let assistantText = '';
+    let assistantEl = null;
+    let currentToolEl = null;
+
+    // Throttled rendering — prevent O(n^2) marked.parse() on every SSE token
+    let renderPending = false;
+    let pendingRenderText = null;
+    let pendingRenderEl = null;
+
+    function scheduleRender(text, el) {
+      pendingRenderText = text;
+      pendingRenderEl = el;
+      if (!renderPending) {
+        renderPending = true;
+        requestAnimationFrame(() => {
+          renderPending = false;
+          if (pendingRenderEl && pendingRenderText !== null) {
+            const contentDiv = pendingRenderEl.querySelector('.content');
+            if (contentDiv) {
+              contentDiv.innerHTML = marked.parse(pendingRenderText);
+            }
+            const messagesEl = document.getElementById('messages');
+            messagesEl.scrollTop = messagesEl.scrollHeight;
+          }
+        });
+      }
+    }
+
+    // Marked configuration
+    marked.setOptions({
+      highlight: function(code, lang) {
+        if (lang && hljs.getLanguage(lang)) {
+          return hljs.highlight(code, { language: lang }).value;
+        }
+        return hljs.highlightAuto(code).value;
+      },
+      breaks: true,
+      gfm: true,
+    });
+
+    // Startup — load sessions, then check for running process
+    loadSessions().then(() => {
+      if (currentProcessId) {
+        reconnectToProcess(currentProcessId);
+      }
+    });
+
+    // Update usage limits on load and every 60 seconds
+    updateUsageLimits();
+    usageUpdateInterval = setInterval(updateUsageLimits, 60000);
+
+    // Periodic health check to detect server restarts (uses lightweight /api/health)
+    let serverAvailable = true;
+    setInterval(async () => {
+      try {
+        const r = await fetch('/api/health');
+        if (!serverAvailable && r.ok) {
+          console.log('Server reconnected, reloading sessions');
+          loadSessions();
+        }
+        serverAvailable = r.ok;
+      } catch (e) {
+        serverAvailable = false;
+      }
+    }, 10000); // Check every 10 seconds
+
+    function toggleSidebar() {
+      document.getElementById('sidebar').classList.toggle('collapsed');
+    }
+
+    async function loadSessions() {
+      try {
+        const r = await fetch('/api/sessions');
+        sessions = await r.json();
+        renderSessions();
+      } catch (e) {
+        console.error('Failed to load sessions:', e);
+      }
+    }
+
+    function renderSessions() {
+      const list = document.getElementById('sessionList');
+      list.innerHTML = '';
+      for (const s of sessions) {
+        const el = document.createElement('div');
+        el.className = `session-item${s.id === currentSessionId ? ' active' : ''}`;
+        const date = new Date(s.modified);
+        // Format in user's local timezone
+        const dateStr = date.toLocaleDateString('en-US', {timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone}) + ' ' +
+                        date.toLocaleTimeString('en-US', {timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone, hour: '2-digit', minute: '2-digit'});
+        const displayTitle = escapeHtml(s.title || s.id.slice(0, 8) + '...');
+        const runningBadge = s.running ? '<span class="session-running">RUNNING</span>' : '';
+        el.innerHTML = `<div class="session-title" title="${escapeHtml(s.title || s.id)}">${displayTitle}${runningBadge}</div><div class="session-date">${dateStr}</div>`;
+        el.onclick = () => switchSession(s.id);
+        list.appendChild(el);
+      }
+    }
+
+    async function switchSession(sessionId) {
+      currentSessionId = sessionId;
+      localStorage.setItem('claude_chat_session', sessionId);
+      totalCost = 0;
+      updateCostDisplay();
+      renderSessions();
+      clearTools();
+      resetStreamState();
+
+      const session = sessions.find(s => s.id === sessionId);
+      const title = session ? session.title : sessionId.slice(0, 8) + '...';
+      document.getElementById('topBarTitle').textContent = title;
+
+      const messagesEl = document.getElementById('messages');
+      messagesEl.innerHTML = '<div class="loading-history">Loading conversation history</div>';
+
+      try {
+        const r = await fetch(`/api/sessions/${sessionId}/messages`);
+        if (!r.ok) throw new Error('Failed to load history');
+
+        const history = await r.json();
+        messagesEl.innerHTML = '';
+
+        if (history.length === 0) {
+          messagesEl.innerHTML = `
+            <div class="welcome">
+              <h1>Empty Session</h1>
+              <p>This session has no messages. Send a message to start a conversation.</p>
+            </div>`;
+          return;
+        }
+
+        // Render messages in batches to avoid blocking the main thread
+        const BATCH_SIZE = 20;
+        let idx = 0;
+        function renderBatch() {
+          const end = Math.min(idx + BATCH_SIZE, history.length);
+          for (; idx < end; idx++) {
+            addMessage(history[idx].role, history[idx].content);
+          }
+          if (idx < history.length) {
+            setTimeout(renderBatch, 0);
+          } else {
+            finishHistoryLoad();
+          }
+        }
+
+        function finishHistoryLoad() {
+          // If session has a running process, reconnect to it
+          if (session && session.running) {
+            const sep = document.createElement('div');
+            sep.className = 'history-separator';
+            sep.textContent = 'Process still running \u2014 reconnecting...';
+            messagesEl.appendChild(sep);
+            messagesEl.scrollTop = messagesEl.scrollHeight;
+          } else {
+            const sep = document.createElement('div');
+            sep.className = 'history-separator';
+            sep.textContent = 'Previous messages loaded \u2014 send a message to continue';
+            messagesEl.appendChild(sep);
+            messagesEl.scrollTop = messagesEl.scrollHeight;
+          }
+        }
+
+        renderBatch();
+      } catch (e) {
+        messagesEl.innerHTML = `
+          <div class="welcome">
+            <h1>Session</h1>
+            <p>Could not load message history. Send a message to continue this conversation.</p>
+          </div>`;
+      }
+    }
+
+    function newChat() {
+      currentSessionId = null;
+      currentProcessId = null;
+      localStorage.removeItem('claude_chat_session');
+      localStorage.removeItem('claude_chat_process');
+      totalCost = 0;
+      updateCostDisplay();
+      renderSessions();
+      clearTools();
+      resetStreamState();
+      document.getElementById('topBarTitle').textContent = 'Claude Chat';
+      document.getElementById('messages').innerHTML = `
+        <div class="welcome">
+          <h1>Claude Chat</h1>
+          <p>Ask Claude anything. Claude has access to tools including SSH, Bash, and file operations on this server.</p>
+        </div>`;
+    }
+
+    function resetStreamState() {
+      assistantText = '';
+      assistantEl = null;
+      currentToolEl = null;
+    }
+
+    function updateCostDisplay() {
+      const el = document.getElementById('costDisplay');
+      el.textContent = totalCost > 0 ? `$${totalCost.toFixed(4)}` : '';
+    }
+
+    function handleKeyDown(e) {
+      if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault();
+        sendMessage();
+      }
+    }
+
+    function autoResize(el) {
+      el.style.height = 'auto';
+      el.style.height = Math.min(el.scrollHeight, 200) + 'px';
+    }
+
+    function addMessage(role, content) {
+      const messagesEl = document.getElementById('messages');
+      const welcome = messagesEl.querySelector('.welcome');
+      if (welcome) welcome.remove();
+
+      const msg = document.createElement('div');
+      msg.className = `message ${role}`;
+
+      if (role === 'assistant') {
+        const contentDiv = document.createElement('div');
+        contentDiv.className = 'content';
+        contentDiv.innerHTML = marked.parse(content);
+        msg.appendChild(contentDiv);
+      } else {
+        msg.textContent = content;
+      }
+
+      messagesEl.appendChild(msg);
+      messagesEl.scrollTop = messagesEl.scrollHeight;
+      return msg;
+    }
+
+    function addSystemError(message) {
+      const messagesEl = document.getElementById('messages');
+      const msg = document.createElement('div');
+      msg.className = 'message system-error';
+      msg.textContent = message;
+      messagesEl.appendChild(msg);
+      messagesEl.scrollTop = messagesEl.scrollHeight;
+    }
+
+    function addToolIndicator(toolName, detail, running) {
+      const toolsEl = document.getElementById('toolsContent');
+      const emptyState = toolsEl.querySelector('.tools-empty');
+      if (emptyState) emptyState.remove();
+
+      const el = document.createElement('div');
+      el.className = `tool-indicator${running ? ' running' : ''}`;
+      el.innerHTML = `<div class="tool-name">${escapeHtml(toolName)}</div>`;
+      if (detail) {
+        el.innerHTML += `<div class="tool-detail">${escapeHtml(detail)}</div>`;
+      }
+      toolsEl.appendChild(el);
+      toolsEl.scrollTop = toolsEl.scrollHeight;
+      return el;
+    }
+
+    function clearTools() {
+      document.getElementById('toolsContent').innerHTML =
+        '<div class="tools-empty">Commands will appear here when Claude executes tools</div>';
+    }
+
+    function escapeHtml(str) {
+      const div = document.createElement('div');
+      div.textContent = str;
+      return div.innerHTML;
+    }
+
+    // Convert UTC timestamps in text to Mountain Time
+    // Matches ISO 8601 patterns: 2026-02-09T21:30:00Z, 2026-02-09T21:30:00.000Z,
+    // 2026-02-09 21:30:00 UTC, and HH:MM:SS UTC / HH:MM UTC patterns
+    function convertUtcTimestamps(text) {
+      // ISO 8601 with T separator and Z suffix
+      text = text.replace(/\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2})?(\.\d+)?Z/g, (match) => {
+        const d = new Date(match);
+        if (isNaN(d)) return match;
+        return d.toLocaleString('en-US', {
+          timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+          year: 'numeric', month: '2-digit', day: '2-digit',
+          hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: true
+        });
+      });
+      // "YYYY-MM-DD HH:MM:SS UTC" pattern
+      text = text.replace(/\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}(:\d{2})?\s+UTC/g, (match) => {
+        const cleaned = match.replace(/\s+UTC$/, '').replace(/\s+/, 'T') + 'Z';
+        const d = new Date(cleaned);
+        if (isNaN(d)) return match;
+        return d.toLocaleString('en-US', {
+          timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+          year: 'numeric', month: '2-digit', day: '2-digit',
+          hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: true
+        });
+      });
+      return text;
+    }
+
+    // ============================================================
+    // Stream event handler (shared between send and reconnect)
+    // ============================================================
+
+    function handleStreamEvent(event) {
+      switch (event.type) {
+        case 'process_start':
+          currentProcessId = event.processId;
+          localStorage.setItem('claude_chat_process', currentProcessId);
+          break;
+
+        case 'assistant':
+          if (event.message && event.message.content) {
+            let text = '';
+            for (const block of event.message.content) {
+              if (block.type === 'text') {
+                text += block.text;
+              } else if (block.type === 'tool_use') {
+                const detail = getToolDetail(block);
+                if (currentToolEl) {
+                  currentToolEl.classList.remove('running');
+                }
+                currentToolEl = addToolIndicator(block.name, detail, true);
+              }
+            }
+
+            if (text && text !== assistantText) {
+              // Detect new turn
+              if (assistantEl && assistantText && !text.startsWith(assistantText.slice(0, 40)) && !assistantText.startsWith(text.slice(0, 40))) {
+                assistantEl = null;
+              }
+              assistantText = text;
+              if (!assistantEl) {
+                assistantEl = addMessage('assistant', text);
+              } else {
+                // Throttle re-renders to once per animation frame
+                scheduleRender(text, assistantEl);
+              }
+            }
+          }
+          break;
+
+        case 'result':
+          if (event.session_id) {
+            currentSessionId = event.session_id;
+            localStorage.setItem('claude_chat_session', currentSessionId);
+          }
+          if (event.cost_usd) {
+            totalCost += event.cost_usd;
+            updateCostDisplay();
+          }
+          if (event.result) {
+            const finalText = event.result;
+            if (finalText && finalText !== assistantText) {
+              assistantText = finalText;
+              if (!assistantEl) {
+                assistantEl = addMessage('assistant', finalText);
+              } else {
+                const contentDiv = assistantEl.querySelector('.content');
+                contentDiv.innerHTML = marked.parse(finalText);
+              }
+            }
+          }
+          if (currentToolEl) {
+            currentToolEl.classList.remove('running');
+            currentToolEl.classList.add('completed');
+            currentToolEl = null;
+          }
+          loadSessions();
+          updateUsageLimits(); // Refresh usage after message completes
+          break;
+
+        case 'tool_use':
+        case 'content_block_start':
+          if (event.name || (event.content_block && event.content_block.type === 'tool_use')) {
+            const name = event.name || event.content_block.name;
+            if (currentToolEl) currentToolEl.classList.remove('running');
+            currentToolEl = addToolIndicator(name, '', true);
+          }
+          break;
+
+        case 'tool_result':
+          if (currentToolEl) {
+            currentToolEl.classList.remove('running');
+            currentToolEl.classList.add('completed');
+            currentToolEl = null;
+          }
+          assistantEl = null;
+          assistantText = '';
+          break;
+
+        case 'system':
+          if (event.message) {
+            const msg = event.message.toLowerCase();
+            if (msg.includes('error') || msg.includes('failed') || msg.includes('not found') ||
+                msg.includes('denied') || msg.includes('refused') || msg.includes('timeout') ||
+                msg.includes('fatal') || msg.includes('exception') || msg.includes('limit') ||
+                msg.includes('rate') || msg.includes('retry')) {
+              addSystemError(convertUtcTimestamps(event.message.trim()));
+            }
+          }
+          break;
+
+        case 'done':
+          if (currentToolEl) {
+            currentToolEl.classList.remove('running');
+            currentToolEl.classList.add('completed');
+            currentToolEl = null;
+          }
+          // Clear process ID — it's finished
+          currentProcessId = null;
+          localStorage.removeItem('claude_chat_process');
+          break;
+
+        case 'error':
+          addMessage('assistant', `**Error:** ${convertUtcTimestamps(event.message || 'Unknown error')}`);
+          break;
+      }
+    }
+
+    function getToolDetail(block) {
+      if (!block.input) return '';
+      if (block.name === 'Bash' && block.input.command) return block.input.command.slice(0, 120);
+      if (block.name === 'Read' && block.input.file_path) return block.input.file_path;
+      if (block.name === 'Write' && block.input.file_path) return `Writing ${block.input.file_path}`;
+      if (block.name === 'Edit' && block.input.file_path) return `Editing ${block.input.file_path}`;
+      if (block.name === 'Grep' && block.input.pattern) return `grep "${block.input.pattern}"`;
+      if (block.name === 'Glob' && block.input.pattern) return block.input.pattern;
+      if (block.name === 'Task' && block.input.description) return block.input.description;
+      return '';
+    }
+
+    // ============================================================
+    // SSE reader — reads from a fetch response and feeds handleStreamEvent
+    // ============================================================
+
+    async function consumeSSEStream(response) {
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let sseBuffer = '';
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        sseBuffer += decoder.decode(value, { stream: true });
+        const lines = sseBuffer.split('\n');
+        sseBuffer = lines.pop();
+
+        for (const line of lines) {
+          if (!line.startsWith('data: ')) continue;
+          try {
+            const event = JSON.parse(line.slice(6));
+            handleStreamEvent(event);
+          } catch (e) {}
+        }
+      }
+    }
+
+    // ============================================================
+    // Reconnect to a running process (after page refresh)
+    // ============================================================
+
+    async function reconnectToProcess(processId) {
+      try {
+        const response = await fetch(`/api/process/${processId}/stream`);
+        if (!response.ok) {
+          // Process no longer exists — clear stale processId
+          currentProcessId = null;
+          localStorage.removeItem('claude_chat_process');
+          return;
+        }
+
+        // Remove any separator
+        const sep = document.querySelector('.history-separator');
+        if (sep) sep.remove();
+
+        setStreaming(true);
+        resetStreamState();
+        await consumeSSEStream(response);
+      } catch (e) {
+        console.error('Reconnect failed:', e);
+        currentProcessId = null;
+        localStorage.removeItem('claude_chat_process');
+      }
+
+      setStreaming(false);
+    }
+
+    // ============================================================
+    // Usage limits display
+    // ============================================================
+
+    let usageUpdateInterval = null;
+
+    async function updateUsageLimits() {
+      try {
+        const r = await fetch('/api/usage');
+        const data = await r.json();
+
+        if (data.usage) {
+          // Update session usage
+          const sessionPct = Math.round(data.usage.session_used);
+          const sessionReset = formatResetTime(data.usage.session_reset_ms);
+          updateUsageBar('sessionBar', 'sessionText', sessionPct, sessionReset);
+
+          // Update weekly usage
+          const weeklyPct = Math.round(data.usage.weekly_used);
+          const weeklyReset = formatResetTime(data.usage.weekly_reset_ms);
+          updateUsageBar('weeklyBar', 'weeklyText', weeklyPct, weeklyReset);
+
+          // Update extra usage if enabled
+          if (data.usage.extra_enabled) {
+            const extraPct = Math.round(data.usage.extra_utilization);
+            const extraCredits = `${Math.round(data.usage.extra_used)}/${data.usage.extra_limit}`;
+            updateUsageBar('extraBar', 'extraText', extraPct, extraCredits);
+            document.getElementById('extraUsageRow').style.display = 'flex';
+          } else {
+            document.getElementById('extraUsageRow').style.display = 'none';
+          }
+
+          document.getElementById('usageDisplay').style.display = 'flex';
+        }
+      } catch (e) {
+        console.error('Failed to fetch usage:', e);
+        // Hide usage display on error
+        document.getElementById('usageDisplay').style.display = 'none';
+      }
+    }
+
+    function formatResetTime(ms) {
+      if (ms <= 0) return 'resetting...';
+
+      const resetDate = new Date(Date.now() + ms);
+      const now = new Date();
+
+      const seconds = Math.floor(ms / 1000);
+      const minutes = Math.floor(seconds / 60);
+      const hours = Math.floor(minutes / 60);
+      const days = Math.floor(hours / 24);
+
+      // Format: "Thu 12pm" or "3d 5h" for longer periods
+      if (days === 0 && hours < 24) {
+        const timeStr = resetDate.toLocaleTimeString('en-US', {
+          timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+          hour: 'numeric',
+          minute: hours < 1 ? '2-digit' : undefined,
+          hour12: true
+        });
+        const dayStr = resetDate.toLocaleDateString('en-US', {
+          timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+          weekday: 'short'
+        });
+        return `${dayStr} ${timeStr}`;
+      }
+
+      if (days > 0) return `${days}d ${hours % 24}h`;
+      if (hours > 0) return `${hours}h ${minutes % 60}m`;
+      if (minutes > 0) return `${minutes}m`;
+      return `${seconds}s`;
+    }
+
+    function updateUsageBar(barId, textId, percentage, resetTime) {
+      const bar = document.getElementById(barId);
+      const text = document.getElementById(textId);
+
+      if (!bar || !text) return;
+
+      bar.style.width = percentage + '%';
+      bar.className = 'usage-bar-fill ' + (percentage < 60 ? 'low' : percentage < 85 ? 'medium' : 'high');
+      text.textContent = percentage + '% • ' + resetTime;
+    }
+
+
+    // ============================================================
+    // Send a new message
+    // ============================================================
+
+    async function sendMessage() {
+      const input = document.getElementById('messageInput');
+      const message = input.value.trim();
+      if (!message || isStreaming) return;
+
+      input.value = '';
+      input.style.height = 'auto';
+
+      const sep = document.querySelector('.history-separator');
+      if (sep) sep.remove();
+
+      addMessage('user', message);
+      setStreaming(true);
+      resetStreamState();
+
+      // Retry with exponential backoff on network errors
+      let retries = 0;
+      const maxRetries = 3;
+      let lastError = null;
+
+      while (retries <= maxRetries) {
+        try {
+          const response = await fetch('/api/chat', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ message, sessionId: currentSessionId }),
+          });
+
+          if (!response.ok) {
+            const err = await response.json().catch(() => ({ error: 'Request failed' }));
+            addMessage('assistant', `**Error:** ${err.error || 'Request failed'}`);
+            setStreaming(false);
+            return;
+          }
+
+          await consumeSSEStream(response);
+          setStreaming(false);
+          return; // Success, exit
+        } catch (e) {
+          lastError = e;
+          if (e.name === 'AbortError') {
+            setStreaming(false);
+            return;
+          }
+
+          // Check if it's a network error
+          if (e.message.includes('Failed to fetch') || e.message.includes('network') || e.message.includes('fetch')) {
+            retries++;
+            if (retries <= maxRetries) {
+              const waitTime = Math.min(1000 * Math.pow(2, retries - 1), 5000); // 1s, 2s, 4s max
+              console.log(`Network error, retrying in ${waitTime}ms (attempt ${retries}/${maxRetries})`);
+              await new Promise(resolve => setTimeout(resolve, waitTime));
+              continue;
+            }
+          }
+
+          // Non-network error or max retries reached
+          addMessage('assistant', `**Error:** ${e.message}${retries > 0 ? ` (after ${retries} retries)` : ''}`);
+          break;
+        }
+      }
+
+      setStreaming(false);
+    }
+
+    // ============================================================
+    // Stop button — explicitly kills the process
+    // ============================================================
+
+    async function stopStreaming() {
+      if (currentProcessId) {
+        try {
+          await fetch(`/api/process/${currentProcessId}/stop`, { method: 'POST' });
+        } catch (e) {
+          console.error('Failed to stop process:', e);
+        }
+      }
+    }
+
+    function setStreaming(streaming) {
+      isStreaming = streaming;
+      const btn = document.getElementById('sendBtn');
+      const input = document.getElementById('messageInput');
+
+      if (streaming) {
+        btn.innerHTML = '&#9632;';
+        btn.className = 'send-btn stop-btn';
+        btn.onclick = stopStreaming;
+        btn.title = 'Stop';
+        input.disabled = true;
+      } else {
+        btn.innerHTML = '&#9654;';
+        btn.className = 'send-btn';
+        btn.onclick = sendMessage;
+        btn.title = 'Send';
+        input.disabled = false;
+        input.focus();
+      }
+    }
+  </script>
+</body>
+</html>
