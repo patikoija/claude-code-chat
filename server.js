@@ -21,6 +21,80 @@ const sessionToProcess = new Map();
 
 let nextProcessId = 1;
 
+// ============================================================
+// Message queue — limits concurrent Claude processes to avoid rate limits
+// ============================================================
+
+const QUEUE_CONCURRENCY = parseInt(process.env.QUEUE_CONCURRENCY || '1', 10);
+let activeCount = 0;
+const messageQueue = []; // [{message, sessionId, res}]
+
+function onProcessComplete() {
+  if (messageQueue.length === 0) {
+    activeCount = Math.max(0, activeCount - 1);
+    return;
+  }
+
+  // Reuse the freed slot immediately for the next queued job
+  const job = messageQueue.shift();
+
+  // Update positions for remaining queued jobs
+  messageQueue.forEach((j, i) => {
+    try {
+      j.res.write(`data: ${JSON.stringify({ type: 'queued', position: i + 1 })}\n\n`);
+    } catch (e) { /* client disconnected */ }
+  });
+
+  // Tell this job it's now processing
+  let skipJob = false;
+  try {
+    job.res.write(`data: ${JSON.stringify({ type: 'queue_start' })}\n\n`);
+  } catch (e) {
+    // Client disconnected before their turn — skip to next
+    skipJob = true;
+  }
+
+  if (skipJob) {
+    onProcessComplete(); // Recurse to get next valid job
+    return;
+  }
+
+  const proc = createProcess(job.message, job.sessionId, onProcessComplete);
+  addListener(proc, job.res);
+  console.log(`Dequeued message for session ${job.sessionId || '(new)'}, ${messageQueue.length} remaining in queue`);
+}
+
+function enqueueOrProcess(message, sessionId, res) {
+  if (activeCount < QUEUE_CONCURRENCY) {
+    activeCount++;
+    const proc = createProcess(message, sessionId, onProcessComplete);
+    addListener(proc, res);
+    console.log(`Started process ${proc.processId} for session ${sessionId || '(new)'}`);
+  } else {
+    const position = messageQueue.length + 1;
+    messageQueue.push({ message, sessionId, res });
+    console.log(`Message queued at position ${position} (session ${sessionId || 'new'})`);
+    try {
+      res.write(`data: ${JSON.stringify({ type: 'queued', position })}\n\n`);
+    } catch (e) { /* ignore */ }
+
+    // Remove from queue if client disconnects while waiting
+    res.on('close', () => {
+      const idx = messageQueue.findIndex(j => j.res === res);
+      if (idx !== -1) {
+        messageQueue.splice(idx, 1);
+        console.log(`Queued message at position ${idx + 1} removed (client disconnected)`);
+        // Rebroadcast updated positions to remaining jobs
+        messageQueue.forEach((j, i) => {
+          try {
+            j.res.write(`data: ${JSON.stringify({ type: 'queued', position: i + 1 })}\n\n`);
+          } catch (e) { /* ignore */ }
+        });
+      }
+    });
+  }
+}
+
 // Buffer limits to prevent memory exhaustion
 const MAX_BUFFER_EVENTS = 10000;  // Max events to keep in memory
 const BUFFER_DISK_PATH = '/tmp/claude-chat-buffers';
@@ -30,7 +104,7 @@ if (!fs.existsSync(BUFFER_DISK_PATH)) {
   fs.mkdirSync(BUFFER_DISK_PATH, { recursive: true });
 }
 
-function createProcess(message, sessionId) {
+function createProcess(message, sessionId, onFinish) {
   const processId = `proc-${nextProcessId++}`;
 
   const args = [
@@ -47,6 +121,7 @@ function createProcess(message, sessionId) {
 
   const claude = spawn('claude', args, {
     cwd: HOME_DIR,
+    detached: true,
     stdio: ['ignore', 'pipe', 'pipe'],
     env: {
       ...process.env,
@@ -132,6 +207,9 @@ function createProcess(message, sessionId) {
 
     // Schedule cleanup after 5 minutes
     setTimeout(() => cleanupProcess(processId), 5 * 60 * 1000);
+
+    // Release the queue slot
+    if (onFinish) onFinish();
   });
 
   claude.on('error', (err) => {
@@ -142,6 +220,9 @@ function createProcess(message, sessionId) {
     }
     proc.listeners.clear();
     setTimeout(() => cleanupProcess(processId), 5 * 60 * 1000);
+
+    // Release the queue slot
+    if (onFinish) onFinish();
   });
 
   return proc;
@@ -424,7 +505,7 @@ function getSessionsList() {
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
 
-// POST /api/chat — Start a new Claude process
+// POST /api/chat — Enqueue or immediately start a Claude process
 app.post('/api/chat', authenticate, (req, res) => {
   const { message, sessionId } = req.body;
 
@@ -448,10 +529,7 @@ app.post('/api/chat', authenticate, (req, res) => {
     'X-Accel-Buffering': 'no',
   });
 
-  const proc = createProcess(message, sessionId);
-  addListener(proc, res);
-
-  console.log(`Started process ${proc.processId} for session ${sessionId || '(new)'}`);
+  enqueueOrProcess(message, sessionId, res);
 });
 
 // GET /api/process/:id/stream — Reconnect to a running process
@@ -493,21 +571,42 @@ app.get('/api/process/:id/stream', authenticate, (req, res) => {
   console.log(`Client reconnected to process ${processId} (${diskEvents.length + proc.buffer.length} buffered events replayed)`);
 });
 
-// POST /api/process/:id/stop — Explicitly kill a process
+// POST /api/process/:id/stop — Kill the Claude process
 app.post('/api/process/:id/stop', authenticate, (req, res) => {
-  const processId = req.params.id;
-  const proc = activeProcesses.get(processId);
-
-  if (!proc) {
-    return res.status(404).json({ error: 'Process not found' });
-  }
-
-  if (!proc.finished) {
-    console.log(`Killing process ${processId} by user request`);
-    proc.claude.kill('SIGTERM');
-  }
-
+  const proc = activeProcesses.get(req.params.id);
+  if (!proc) return res.status(404).json({ error: 'Process not found' });
+  killProc(proc);
   res.json({ ok: true });
+});
+
+// POST /api/sessions/:id/stop — Kill by session ID (fallback when processId unknown)
+app.post('/api/sessions/:id/stop', authenticate, (req, res) => {
+  const proc = getActiveProcess(req.params.id);
+  if (!proc) return res.status(404).json({ error: 'No active process for session' });
+  killProc(proc);
+  res.json({ ok: true });
+});
+
+function killProc(proc) {
+  if (proc.finished) return;
+  const pid = proc.claude.pid;
+  console.log(`[STOP] Killing pid=${pid} (processId=${proc.processId})`);
+  // SIGKILL cannot be caught or ignored — guaranteed termination
+  try { process.kill(-pid, 'SIGKILL'); } catch (e) { console.log(`kill(-pgid): ${e.message}`); }
+  try { process.kill(pid,  'SIGKILL'); } catch (e) { console.log(`kill(pid):   ${e.message}`); }
+}
+
+// GET /api/queue — Current queue status
+app.get('/api/queue', authenticate, (req, res) => {
+  res.json({
+    concurrency: QUEUE_CONCURRENCY,
+    active: activeCount,
+    queued: messageQueue.length,
+    queue: messageQueue.map((j, i) => ({
+      position: i + 1,
+      sessionId: j.sessionId || null,
+    })),
+  });
 });
 
 // GET /api/sessions — List recent sessions
@@ -540,6 +639,7 @@ app.get('/api/health', authenticate, (req, res) => {
     uptime: process.uptime(),
     memory: process.memoryUsage(),
     activeProcesses: activeProcesses.size,
+    queue: { concurrency: QUEUE_CONCURRENCY, active: activeCount, queued: messageQueue.length },
     processes: [],
   };
 
@@ -631,4 +731,5 @@ app.get('/api/usage', authenticate, async (req, res) => {
 
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`Claude Chat server listening on port ${PORT}`);
+  console.log(`Message queue: concurrency=${QUEUE_CONCURRENCY}`);
 });

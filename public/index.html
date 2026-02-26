@@ -241,6 +241,19 @@
       border-radius: 12px; opacity: 0.7;
     }
 
+    .queue-status {
+      align-self: center; font-size: 13px;
+      padding: 10px 18px; background: var(--bg-secondary);
+      border: 1px solid var(--accent); border-radius: 12px;
+      color: var(--accent-light); display: flex; align-items: center; gap: 10px;
+    }
+
+    .queue-status::before {
+      content: ''; display: inline-block; width: 10px; height: 10px;
+      border-radius: 50%; background: var(--accent);
+      animation: pulse 1.5s ease-in-out infinite; flex-shrink: 0;
+    }
+
     /* Tool indicators */
     .tool-indicator {
       padding: 8px 12px; background: var(--tool-bg);
@@ -411,11 +424,14 @@
     let isStreaming = false;
     let totalCost = 0;
     let sessions = [];
+    let streamAbortController = null;
 
     // Streaming state (shared between sendMessage and reconnect)
     let assistantText = '';
     let assistantEl = null;
     let currentToolEl = null;
+    let queueStatusEl = null;
+    let currentReader = null;  // track active SSE reader for direct cancellation
 
     // Throttled rendering — prevent O(n^2) marked.parse() on every SSE token
     let renderPending = false;
@@ -607,6 +623,8 @@
       assistantText = '';
       assistantEl = null;
       currentToolEl = null;
+      queueStatusEl = null;
+      currentReader = null;
     }
 
     function updateCostDisplay() {
@@ -718,6 +736,14 @@
 
     function handleStreamEvent(event) {
       switch (event.type) {
+        case 'queued':
+          showQueueStatus(event.position);
+          break;
+
+        case 'queue_start':
+          clearQueueStatus();
+          break;
+
         case 'process_start':
           currentProcessId = event.processId;
           localStorage.setItem('claude_chat_process', currentProcessId);
@@ -845,29 +871,58 @@
     }
 
     // ============================================================
+    // Queue status helpers
+    // ============================================================
+
+    function showQueueStatus(position) {
+      const messagesEl = document.getElementById('messages');
+      if (!queueStatusEl) {
+        queueStatusEl = document.createElement('div');
+        queueStatusEl.className = 'queue-status';
+        messagesEl.appendChild(queueStatusEl);
+      }
+      queueStatusEl.textContent = position === 1
+        ? 'Queued — next up, waiting for current response to finish...'
+        : `Queued — position ${position} of ${position}`;
+      messagesEl.scrollTop = messagesEl.scrollHeight;
+    }
+
+    function clearQueueStatus() {
+      if (queueStatusEl) {
+        queueStatusEl.remove();
+        queueStatusEl = null;
+      }
+    }
+
+    // ============================================================
     // SSE reader — reads from a fetch response and feeds handleStreamEvent
     // ============================================================
 
     async function consumeSSEStream(response) {
       const reader = response.body.getReader();
+      currentReader = reader;
       const decoder = new TextDecoder();
       let sseBuffer = '';
 
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
+      try {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
 
-        sseBuffer += decoder.decode(value, { stream: true });
-        const lines = sseBuffer.split('\n');
-        sseBuffer = lines.pop();
+          sseBuffer += decoder.decode(value, { stream: true });
+          const lines = sseBuffer.split('\n');
+          sseBuffer = lines.pop();
 
-        for (const line of lines) {
-          if (!line.startsWith('data: ')) continue;
-          try {
-            const event = JSON.parse(line.slice(6));
-            handleStreamEvent(event);
-          } catch (e) {}
+          for (const line of lines) {
+            if (!line.startsWith('data: ')) continue;
+            try {
+              const event = JSON.parse(line.slice(6));
+              handleStreamEvent(event);
+            } catch (e) {}
+          }
         }
+      } finally {
+        currentReader = null;
       }
     }
 
@@ -877,7 +932,10 @@
 
     async function reconnectToProcess(processId) {
       try {
-        const response = await fetch(`/api/process/${processId}/stream`);
+        streamAbortController = new AbortController();
+        const response = await fetch(`/api/process/${processId}/stream`, {
+          signal: streamAbortController.signal,
+        });
         if (!response.ok) {
           // Process no longer exists — clear stale processId
           currentProcessId = null;
@@ -1004,6 +1062,7 @@
       addMessage('user', message);
       setStreaming(true);
       resetStreamState();
+      streamAbortController = new AbortController();
 
       // Retry with exponential backoff on network errors
       let retries = 0;
@@ -1016,6 +1075,7 @@
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ message, sessionId: currentSessionId }),
+            signal: streamAbortController.signal,
           });
 
           if (!response.ok) {
@@ -1060,12 +1120,35 @@
     // ============================================================
 
     async function stopStreaming() {
-      if (currentProcessId) {
-        try {
-          await fetch(`/api/process/${currentProcessId}/stop`, { method: 'POST' });
-        } catch (e) {
-          console.error('Failed to stop process:', e);
+      // Capture IDs before any async ops (they may be cleared by side effects)
+      const pid = currentProcessId;
+      const sid = currentSessionId;
+
+      // 1. Cancel the SSE reader directly — fastest way to stop incoming events
+      if (currentReader) {
+        try { currentReader.cancel(); } catch (e) {}
+        currentReader = null;
+      }
+
+      // 2. Abort the fetch signal as well (belt + suspenders)
+      if (streamAbortController) {
+        streamAbortController.abort();
+        streamAbortController = null;
+      }
+
+      // 3. Update UI immediately — don't wait for the SSE loop to detect the abort
+      setStreaming(false);
+
+      // 4. Kill the server-side Claude process
+      try {
+        if (pid) {
+          await fetch(`/api/process/${pid}/stop`, { method: 'POST' });
+        } else if (sid) {
+          // Fallback: stop by session ID when processId hasn't arrived yet
+          await fetch(`/api/sessions/${sid}/stop`, { method: 'POST' });
         }
+      } catch (e) {
+        console.error('Stop fetch failed:', e);
       }
     }
 
