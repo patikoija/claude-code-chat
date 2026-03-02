@@ -25,7 +25,7 @@ let nextProcessId = 1;
 // Message queue — limits concurrent Claude processes to avoid rate limits
 // ============================================================
 
-const QUEUE_CONCURRENCY = parseInt(process.env.QUEUE_CONCURRENCY || '1', 10);
+const QUEUE_CONCURRENCY = parseInt(process.env.QUEUE_CONCURRENCY || '3', 10);
 let activeCount = 0;
 const messageQueue = []; // [{message, sessionId, res}]
 

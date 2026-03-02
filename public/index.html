@@ -4,6 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Claude Chat</title>
+  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%237c5cbf'/%3E%3Cpath d='M16 6C10 6 5 10 5 15c0 2.8 1.5 5.3 4 7v4l3.5-2c1.1.3 2.3.5 3.5.5 6 0 11-4 11-9S22 6 16 6z' fill='white'/%3E%3C/svg%3E">
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
   <script src="https://cdnjs.cloudflare.com/ajax/libs/marked/12.0.1/marked.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
@@ -419,8 +420,8 @@
 
   <script>
     // State
-    let currentSessionId = localStorage.getItem('claude_chat_session') || null;
-    let currentProcessId = localStorage.getItem('claude_chat_process') || null;
+    let currentSessionId = sessionStorage.getItem('claude_chat_session') || null;
+    let currentProcessId = sessionStorage.getItem('claude_chat_process') || null;
     let isStreaming = false;
     let totalCost = 0;
     let sessions = [];
@@ -529,7 +530,7 @@
 
     async function switchSession(sessionId) {
       currentSessionId = sessionId;
-      localStorage.setItem('claude_chat_session', sessionId);
+      sessionStorage.setItem('claude_chat_session', sessionId);
       totalCost = 0;
       updateCostDisplay();
       renderSessions();
@@ -604,8 +605,8 @@
     function newChat() {
       currentSessionId = null;
       currentProcessId = null;
-      localStorage.removeItem('claude_chat_session');
-      localStorage.removeItem('claude_chat_process');
+      sessionStorage.removeItem('claude_chat_session');
+      sessionStorage.removeItem('claude_chat_process');
       totalCost = 0;
       updateCostDisplay();
       renderSessions();
@@ -746,7 +747,7 @@
 
         case 'process_start':
           currentProcessId = event.processId;
-          localStorage.setItem('claude_chat_process', currentProcessId);
+          sessionStorage.setItem('claude_chat_process', currentProcessId);
           break;
 
         case 'assistant':
@@ -783,7 +784,7 @@
         case 'result':
           if (event.session_id) {
             currentSessionId = event.session_id;
-            localStorage.setItem('claude_chat_session', currentSessionId);
+            sessionStorage.setItem('claude_chat_session', currentSessionId);
           }
           if (event.cost_usd) {
             totalCost += event.cost_usd;
@@ -849,7 +850,7 @@
           }
           // Clear process ID — it's finished
           currentProcessId = null;
-          localStorage.removeItem('claude_chat_process');
+          sessionStorage.removeItem('claude_chat_process');
           break;
 
         case 'error':
@@ -939,7 +940,7 @@
         if (!response.ok) {
           // Process no longer exists — clear stale processId
           currentProcessId = null;
-          localStorage.removeItem('claude_chat_process');
+          sessionStorage.removeItem('claude_chat_process');
           return;
         }
 
@@ -953,7 +954,7 @@
       } catch (e) {
         console.error('Reconnect failed:', e);
         currentProcessId = null;
-        localStorage.removeItem('claude_chat_process');
+        sessionStorage.removeItem('claude_chat_process');
       }
 
       setStreaming(false);
