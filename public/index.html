@@ -339,6 +339,29 @@
 
     .auth-overlay { display: none; }
 
+    /* Model selector */
+    .model-selector {
+      display: flex; align-items: center; gap: 8px;
+    }
+
+    .model-selector select {
+      background: var(--bg-primary); color: var(--text-primary);
+      border: 1px solid var(--border); border-radius: 6px;
+      padding: 6px 10px; font-size: 12px; cursor: pointer;
+      outline: none; font-family: inherit;
+    }
+
+    .model-selector select:focus { border-color: var(--accent); }
+
+    .model-selector .provider-label {
+      font-size: 11px; color: var(--text-secondary); opacity: 0.7;
+    }
+
+    .ollama-stats {
+      font-size: 11px; color: var(--text-secondary);
+      padding: 4px 8px; background: var(--bg-primary); border-radius: 4px;
+    }
+
     ::-webkit-scrollbar { width: 6px; }
     ::-webkit-scrollbar-track { background: transparent; }
     ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
@@ -370,6 +393,18 @@
     <div class="top-bar">
       <button class="toggle-sidebar-btn" onclick="toggleSidebar()" title="Toggle sidebar">&#9776;</button>
       <span class="top-bar-title" id="topBarTitle">Claude Chat</span>
+      <div class="model-selector">
+        <select id="modelSelect" onchange="onModelChange()">
+          <optgroup label="Claude" id="claudeModels">
+            <option value="claude:sonnet" selected>Claude Sonnet</option>
+            <option value="claude:opus">Claude Opus</option>
+            <option value="claude:haiku">Claude Haiku</option>
+          </optgroup>
+          <optgroup label="Ollama (Local)" id="ollamaModels">
+          </optgroup>
+        </select>
+      </div>
+      <span class="ollama-stats" id="ollamaStats" style="display: none;"></span>
       <div class="usage-display" id="usageDisplay" style="display: none;" title="Live usage data from Claude API">
         <div class="usage-row">
           <span class="usage-label">Session:</span>
@@ -427,6 +462,11 @@
     let sessions = [];
     let streamAbortController = null;
 
+    // Provider/model state
+    let currentProvider = 'claude';  // 'claude' or 'ollama'
+    let currentModel = 'sonnet';
+    let ollamaHistory = [];  // conversation history for Ollama (stateless API)
+
     // Streaming state (shared between sendMessage and reconnect)
     let assistantText = '';
     let assistantEl = null;
@@ -477,6 +517,9 @@
       }
     });
 
+    // Load Ollama models
+    loadOllamaModels();
+
     // Update usage limits on load and every 60 seconds
     updateUsageLimits();
     usageUpdateInterval = setInterval(updateUsageLimits, 60000);
@@ -496,14 +539,71 @@
       }
     }, 10000); // Check every 10 seconds
 
+    async function loadOllamaModels() {
+      try {
+        const r = await fetch('/api/ollama/models');
+        if (!r.ok) return;
+        const models = await r.json();
+        const group = document.getElementById('ollamaModels');
+        group.innerHTML = '';
+        for (const m of models) {
+          const opt = document.createElement('option');
+          opt.value = `ollama:${m.name}`;
+          const sizeGB = m.size ? (m.size / 1e9).toFixed(1) + 'GB' : '';
+          const params = m.parameters || '';
+          const vramTag = m.fits_in_vram === false ? '\u26a0\ufe0f low VRAM' : '';
+          const label = [m.name, params, sizeGB, vramTag].filter(Boolean).join(' - ');
+          opt.textContent = label;
+          group.appendChild(opt);
+        }
+      } catch (e) {
+        console.error('Failed to load Ollama models:', e);
+      }
+    }
+
+    function onModelChange() {
+      const val = document.getElementById('modelSelect').value;
+      const [provider, ...rest] = val.split(':');
+      currentProvider = provider;
+      currentModel = rest.join(':');
+
+      // Toggle UI elements based on provider
+      const usageEl = document.getElementById('usageDisplay');
+      const costEl = document.getElementById('costDisplay');
+      const toolsPane = document.querySelector('.tools-pane');
+      const ollamaStatsEl = document.getElementById('ollamaStats');
+      const sessionList = document.getElementById('sidebar');
+
+      if (provider === 'ollama') {
+        usageEl.style.display = 'none';
+        costEl.style.display = 'none';
+        ollamaStatsEl.style.display = 'inline-block';
+        ollamaStatsEl.textContent = `Local: ${currentModel}`;
+        document.getElementById('topBarTitle').textContent = 'Local LLM Chat';
+        // Start fresh Ollama conversation
+        ollamaHistory = [];
+      } else {
+        costEl.style.display = '';
+        ollamaStatsEl.style.display = 'none';
+        document.getElementById('topBarTitle').textContent = 'Claude Chat';
+        updateUsageLimits();
+      }
+    }
+
     function toggleSidebar() {
       document.getElementById('sidebar').classList.toggle('collapsed');
     }
 
+    let ollamaSessions = [];
+
     async function loadSessions() {
       try {
-        const r = await fetch('/api/sessions');
-        sessions = await r.json();
+        const [claudeRes, ollamaRes] = await Promise.all([
+          fetch('/api/sessions'),
+          fetch('/api/ollama/sessions'),
+        ]);
+        sessions = await claudeRes.json();
+        ollamaSessions = await ollamaRes.json();
         renderSessions();
       } catch (e) {
         console.error('Failed to load sessions:', e);
@@ -513,18 +613,39 @@
     function renderSessions() {
       const list = document.getElementById('sessionList');
       list.innerHTML = '';
-      for (const s of sessions) {
-        const el = document.createElement('div');
-        el.className = `session-item${s.id === currentSessionId ? ' active' : ''}`;
-        const date = new Date(s.modified);
-        // Format in user's local timezone
-        const dateStr = date.toLocaleDateString('en-US', {timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone}) + ' ' +
-                        date.toLocaleTimeString('en-US', {timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone, hour: '2-digit', minute: '2-digit'});
-        const displayTitle = escapeHtml(s.title || s.id.slice(0, 8) + '...');
-        const runningBadge = s.running ? '<span class="session-running">RUNNING</span>' : '';
-        el.innerHTML = `<div class="session-title" title="${escapeHtml(s.title || s.id)}">${displayTitle}${runningBadge}</div><div class="session-date">${dateStr}</div>`;
-        el.onclick = () => switchSession(s.id);
-        list.appendChild(el);
+
+      // Show sessions based on current provider, or all if mixed
+      const showClaude = currentProvider === 'claude';
+      const showOllama = currentProvider === 'ollama';
+
+      if (showClaude || !showOllama) {
+        for (const s of sessions) {
+          const el = document.createElement('div');
+          el.className = `session-item${s.id === currentSessionId ? ' active' : ''}`;
+          const date = new Date(s.modified);
+          const dateStr = date.toLocaleDateString('en-US', {timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone}) + ' ' +
+                          date.toLocaleTimeString('en-US', {timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone, hour: '2-digit', minute: '2-digit'});
+          const displayTitle = escapeHtml(s.title || s.id.slice(0, 8) + '...');
+          const runningBadge = s.running ? '<span class="session-running">RUNNING</span>' : '';
+          el.innerHTML = `<div class="session-title" title="${escapeHtml(s.title || s.id)}">${displayTitle}${runningBadge}</div><div class="session-date">${dateStr}</div>`;
+          el.onclick = () => switchSession(s.id);
+          list.appendChild(el);
+        }
+      }
+
+      if (showOllama) {
+        for (const s of ollamaSessions) {
+          const el = document.createElement('div');
+          el.className = `session-item${s.id === currentSessionId ? ' active' : ''}`;
+          const date = new Date(s.modified);
+          const dateStr = date.toLocaleDateString('en-US', {timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone}) + ' ' +
+                          date.toLocaleTimeString('en-US', {timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone, hour: '2-digit', minute: '2-digit'});
+          const displayTitle = escapeHtml(s.title || s.id.slice(0, 8) + '...');
+          const modelBadge = `<span style="font-size:10px;color:var(--accent);margin-left:4px;">${escapeHtml(s.model || 'ollama')}</span>`;
+          el.innerHTML = `<div class="session-title" title="${escapeHtml(s.title || s.id)}">${displayTitle}${modelBadge}</div><div class="session-date">${dateStr}</div>`;
+          el.onclick = () => switchOllamaSession(s.id);
+          list.appendChild(el);
+        }
       }
     }
 
@@ -602,9 +723,59 @@
       }
     }
 
+    async function switchOllamaSession(sessionId) {
+      currentSessionId = sessionId;
+      sessionStorage.setItem('claude_chat_session', sessionId);
+      renderSessions();
+      clearTools();
+      resetStreamState();
+
+      const messagesEl = document.getElementById('messages');
+      messagesEl.innerHTML = '<div class="loading-history">Loading conversation history</div>';
+
+      try {
+        const r = await fetch(`/api/ollama/sessions/${sessionId}`);
+        if (!r.ok) throw new Error('Failed to load session');
+        const session = await r.json();
+
+        // Restore Ollama history for multi-turn (include system prompt)
+        ollamaHistory = (session.messages || []).filter(m => m.role === 'user' || m.role === 'assistant');
+
+        // Switch to the right model
+        const modelSelect = document.getElementById('modelSelect');
+        const modelVal = `ollama:${session.model}`;
+        if (modelSelect.querySelector(`option[value="${modelVal}"]`)) {
+          modelSelect.value = modelVal;
+          onModelChange();
+        }
+
+        const title = session.title || sessionId.slice(0, 8) + '...';
+        document.getElementById('topBarTitle').textContent = title;
+
+        messagesEl.innerHTML = '';
+        const displayMessages = (session.messages || []).filter(m => m.role === 'user' || m.role === 'assistant');
+        for (const msg of displayMessages) {
+          addMessage(msg.role, msg.content);
+        }
+
+        const sep = document.createElement('div');
+        sep.className = 'history-separator';
+        sep.textContent = 'Previous messages loaded \u2014 send a message to continue';
+        messagesEl.appendChild(sep);
+        messagesEl.scrollTop = messagesEl.scrollHeight;
+      } catch (e) {
+        messagesEl.innerHTML = `
+          <div class="welcome">
+            <h1>Session</h1>
+            <p>Could not load session history.</p>
+          </div>`;
+      }
+    }
+
     function newChat() {
       currentSessionId = null;
       currentProcessId = null;
+      ollamaHistory = [];
       sessionStorage.removeItem('claude_chat_session');
       sessionStorage.removeItem('claude_chat_process');
       totalCost = 0;
@@ -612,11 +783,15 @@
       renderSessions();
       clearTools();
       resetStreamState();
-      document.getElementById('topBarTitle').textContent = 'Claude Chat';
+      const title = currentProvider === 'ollama' ? 'Local LLM Chat' : 'Claude Chat';
+      const desc = currentProvider === 'ollama'
+        ? `Chat with ${currentModel} running locally on your GPU.`
+        : 'Ask Claude anything. Claude has access to tools including SSH, Bash, and file operations on this server.';
+      document.getElementById('topBarTitle').textContent = title;
       document.getElementById('messages').innerHTML = `
         <div class="welcome">
-          <h1>Claude Chat</h1>
-          <p>Ask Claude anything. Claude has access to tools including SSH, Bash, and file operations on this server.</p>
+          <h1>${title}</h1>
+          <p>${desc}</p>
         </div>`;
     }
 
@@ -1065,7 +1240,12 @@
       resetStreamState();
       streamAbortController = new AbortController();
 
-      // Retry with exponential backoff on network errors
+      if (currentProvider === 'ollama') {
+        await sendOllamaMessage(message);
+        return;
+      }
+
+      // Claude path — retry with exponential backoff on network errors
       let retries = 0;
       const maxRetries = 3;
       let lastError = null;
@@ -1110,6 +1290,150 @@
           // Non-network error or max retries reached
           addMessage('assistant', `**Error:** ${e.message}${retries > 0 ? ` (after ${retries} retries)` : ''}`);
           break;
+        }
+      }
+
+      setStreaming(false);
+    }
+
+    // ============================================================
+    // Ollama message handler
+    // ============================================================
+
+    async function sendOllamaMessage(message) {
+      // Add user message to Ollama history
+      ollamaHistory.push({ role: 'user', content: message });
+      clearTools();
+
+      // Create assistant bubble now, accumulate text into it
+      let fullText = '';
+      assistantEl = addMessage('assistant', '...');
+      let currentOllamaToolEl = null;
+
+      try {
+        const response = await fetch('/api/ollama/chat', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ model: currentModel, messages: ollamaHistory, sessionId: currentSessionId }),
+          signal: streamAbortController.signal,
+        });
+
+        if (!response.ok) {
+          const err = await response.json().catch(() => ({ error: 'Request failed' }));
+          assistantEl.querySelector('.content').innerHTML = marked.parse(`**Error:** ${err.error || 'Request failed'}`);
+          setStreaming(false);
+          return;
+        }
+
+        const reader = response.body.getReader();
+        currentReader = reader;
+        const decoder = new TextDecoder();
+        let sseBuffer = '';
+
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+
+          sseBuffer += decoder.decode(value, { stream: true });
+          const lines = sseBuffer.split('\n');
+          sseBuffer = lines.pop();
+
+          for (const line of lines) {
+            if (!line.startsWith('data: ')) continue;
+            try {
+              const event = JSON.parse(line.slice(6));
+
+              if (event.type === 'session' && event.session_id) {
+                currentSessionId = event.session_id;
+                sessionStorage.setItem('claude_chat_session', currentSessionId);
+              }
+
+              if (event.type === 'assistant' && event.delta && event.message) {
+                for (const block of event.message.content) {
+                  if (block.type === 'text') {
+                    fullText += block.text;
+                  }
+                }
+                // New assistant bubble after tool results
+                if (!assistantEl) {
+                  assistantEl = addMessage('assistant', fullText);
+                } else {
+                  scheduleRender(fullText, assistantEl);
+                }
+              }
+
+              if (event.type === 'tool_use') {
+                // Show tool execution in tools pane
+                if (currentOllamaToolEl) {
+                  currentOllamaToolEl.classList.remove('running');
+                  currentOllamaToolEl.classList.add('completed');
+                }
+                currentOllamaToolEl = addToolIndicator(event.name, event.detail || '', true);
+              }
+
+              if (event.type === 'tool_result') {
+                // Mark tool as completed
+                if (currentOllamaToolEl) {
+                  currentOllamaToolEl.classList.remove('running');
+                  currentOllamaToolEl.classList.add('completed');
+                  if (event.blocked) {
+                    currentOllamaToolEl.style.borderLeftColor = 'var(--error)';
+                  }
+                  currentOllamaToolEl = null;
+                }
+                // Reset assistant text for the next turn's response
+                fullText = '';
+                assistantEl = null;
+              }
+
+              if (event.type === 'result') {
+                if (event.session_id) {
+                  currentSessionId = event.session_id;
+                  sessionStorage.setItem('claude_chat_session', currentSessionId);
+                }
+                if (event.stats) {
+                  const statsEl = document.getElementById('ollamaStats');
+                  const parts = [];
+                  if (event.stats.tokens_per_second) parts.push(`${event.stats.tokens_per_second} tok/s`);
+                  if (event.stats.tokens) parts.push(`${event.stats.tokens} tokens`);
+                  if (event.stats.total_duration_ms) parts.push(`${(event.stats.total_duration_ms / 1000).toFixed(1)}s`);
+                  if (parts.length) statsEl.textContent = parts.join(' | ');
+                }
+                loadSessions(); // Refresh sidebar
+              }
+
+              if (event.type === 'error') {
+                fullText += `\n\n**Error:** ${event.message}`;
+                if (!assistantEl) {
+                  assistantEl = addMessage('assistant', fullText);
+                } else {
+                  scheduleRender(fullText, assistantEl);
+                }
+              }
+            } catch (e) {}
+          }
+        }
+
+        currentReader = null;
+
+        // Final render
+        if (fullText && assistantEl) {
+          const contentDiv = assistantEl.querySelector('.content');
+          contentDiv.innerHTML = marked.parse(fullText);
+          // Add assistant response to history for multi-turn
+          ollamaHistory.push({ role: 'assistant', content: fullText });
+        }
+
+        // Mark any remaining tools as completed
+        if (currentOllamaToolEl) {
+          currentOllamaToolEl.classList.remove('running');
+          currentOllamaToolEl.classList.add('completed');
+        }
+      } catch (e) {
+        if (e.name !== 'AbortError') {
+          if (!assistantEl) assistantEl = addMessage('assistant', '');
+          const contentDiv = assistantEl.querySelector('.content');
+          contentDiv.innerHTML = marked.parse(`**Error:** ${e.message}`);
         }
       }
 
